@@ -16,7 +16,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from tensorflow.keras import Input, Sequential
 from tensorflow.keras.layers import LSTM, Dense
 
-# === KONFIGURASI ===
+# === CONFIGURATION ===
 yb_csv      = 'youbike_status.csv'
 map_csv     = 'weathermapping.csv'
 weather_csv = 'weather.csv'
@@ -24,15 +24,15 @@ target_col  = 'available_rent_bikes'
 freq        = 'h'
 target_date = pd.to_datetime('2025-05-27')
 
-look_back   = 168     # 168 jam = 1 minggu histori
-forecast_h  = 5 * 24  # 5 hari (120 jam prediksi)
+look_back   = 168     # 168 hours = 1 week of history
+forecast_h  = 5 * 24  # 5 days (120-hour forecast)
 
 # Load data
 df_all    = pd.read_csv(yb_csv, parse_dates=['mday'])
 map_df    = pd.read_csv(map_csv)
 w_df_all  = pd.read_csv(weather_csv, parse_dates=['observe_time'])
 
-# Fungsi ekstraksi fitur cuaca per stasiun
+# Function to extract weather features for a station
 def get_weather_features_for_station(station_id, map_df, w_df_all, freq):
     mapping = map_df[map_df['YouBike Station ID'] == int(station_id)]
     if mapping.empty:
@@ -48,7 +48,7 @@ def get_weather_features_for_station(station_id, map_df, w_df_all, freq):
     weather_dummies = pd.get_dummies(w_df['weather'], prefix='weather')
     return pd.concat([w_df[['temperature']], weather_dummies], axis=1)
 
-# Fungsi KPI
+# KPI function
 def compute_kpi(y_true, y_pred, t_elapsed):
     mask = ~np.isnan(y_true) & ~np.isnan(y_pred)
     y_true_f = y_true[mask]
@@ -59,7 +59,7 @@ def compute_kpi(y_true, y_pred, t_elapsed):
     r2   = r2_score(y_true_f, y_pred_f)
     return mae, rmse, mape, r2, t_elapsed
 
-# Container hasil
+# Container for results
 results = []
 predictions_list = []
 station_ids = df_all['sno'].astype(str).unique()
@@ -67,16 +67,16 @@ start = target_date
 end   = target_date + timedelta(hours=forecast_h - 1)
 
 for station_id in station_ids:
-    # 1) Siapkan ts YouBike
+    # 1) Prepare YouBike time series
     df = df_all[df_all['sno'].astype(str) == station_id].set_index('mday').sort_index()
     ts = df[target_col].resample(freq).mean().bfill().ffill()
 
-    # 2) Ekstrak fitur cuaca
+    # 2) Extract weather features
     weather = get_weather_features_for_station(station_id, map_df, w_df_all, freq)
     if ts.empty or weather is None or len(ts) < (look_back + forecast_h):
         continue
 
-    # 3) SCALING TERPISAH
+    # 3) Separate scaling
     scaler_y = MinMaxScaler()
     y_all = ts.values.reshape(-1, 1)
     y_scaled = scaler_y.fit_transform(y_all)
@@ -85,7 +85,7 @@ for station_id in station_ids:
     X_feat = weather.values
     X_scaled = scaler_X.fit_transform(X_feat)
 
-    # 4) Gabungkan dan buat dataset sequence
+    # 4) Combine and create sequence dataset
     data_scaled = np.hstack([y_scaled, X_scaled])
     time_index = weather.index
     X, y = [], []
@@ -100,12 +100,12 @@ for station_id in station_ids:
     if len(X) == 0:
         continue
 
-    # 5) Split train/test
+    # 5) Split into train/test sets
     split = int(len(X) * 0.8)
     X_train, y_train = X[:split], y[:split]
     X_test,  y_test  = X[split:], y[split:]
 
-    # 6) Definisi model dengan Input layer
+    # 6) Define model with Input layer
     model = Sequential([
         Input(shape=(look_back, data_scaled.shape[1])),
         LSTM(50),
@@ -118,12 +118,12 @@ for station_id in station_ids:
     model.fit(X_train, y_train, epochs=10, batch_size=16, verbose=0)
     elapsed = time.time() - t0
 
-    # 8) tf.function untuk prediksi tanpa retracing berlebih
+    # 8) tf.function for prediction to reduce retracing
     @tf.function(reduce_retracing=True)
     def predict_fn(x):
         return model(x, training=False)
 
-    # 9) Prediksi & inverse-scale hanya pada target
+    # 9) Predict & inverse-scale only the target
     y_pred_s = predict_fn(tf.constant(X_test))
     y_pred_s = y_pred_s.numpy()
     y_pred = np.zeros_like(y_pred_s)
@@ -132,7 +132,7 @@ for station_id in station_ids:
         y_pred[:, h] = scaler_y.inverse_transform(y_pred_s[:, h].reshape(-1, 1)).flatten()
         y_true[:, h] = scaler_y.inverse_transform(y_test[:, h].reshape(-1, 1)).flatten()
 
-    # 10) Simpan prediksi dengan timestamp
+    # 10) Save predictions with timestamp
     base_idx = split + look_back
     for idx in range(len(y_pred)):
         base_time = time_index[base_idx + idx]
@@ -145,14 +145,14 @@ for station_id in station_ids:
                 'prediction':  y_pred[idx, h]
             })
 
-    # 11) Simpan metrik per horizon
+    # 11) Save metrics per horizon
     for h in range(forecast_h):
         mae, rmse, mape, r2, _ = compute_kpi(y_true[:, h], y_pred[:, h], elapsed)
         results.append([station_id, h + 1, mae, rmse, mape, r2, elapsed])
 
-    print(f"✓ Selesai LSTM (look_back={look_back}) untuk stasiun {station_id}")
+    print(f"✓ Completed LSTM (look_back={look_back}) for station {station_id}")
 
-# 12) Simpan hasil ke CSV
+# 12) Save results to CSV
 pd.DataFrame(
     results,
     columns=['station_id','horizon_hr','MAE','RMSE','MAPE','R2','Time_s']
@@ -163,6 +163,6 @@ pd.DataFrame(predictions_list).to_csv(
     index=False, float_format='%.2f'
 )
 
-print("✓ Semua selesai.")
+print("✓ All done.")
 print("  • Metrics → lstm_metrics_all_stations.csv")
 print("  • Predictions → lstm_predictions_all_stations.csv")

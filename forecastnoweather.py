@@ -9,24 +9,24 @@ from prophet import Prophet
 from statsmodels.tsa.arima.model import ARIMA
 
 def main():
-    # === CONFIGURASI ===
-    yb_csv      = 'youbike_status.csv'      # data YouBike
+    # === CONFIGURATION ===
+    yb_csv      = 'youbike_status.csv'      # YouBike data file
     target_col  = 'available_rent_bikes'
     num_weeks   = 3
-    freq        = 'h'                    # gunakan huruf kecil untuk frekuensi
+    freq        = 'h'                    # use lowercase for frequency
     target_date = pd.to_datetime('2025-05-27')
 
-    # hitung window (sama untuk semua stasiun)
+    # compute window (same for all stations)
     start = target_date
     end   = target_date + timedelta(days=5) - timedelta(hours=1)
 
-    # === 1) Load semua data ===
+    # === 1) Load all data ===
     df_all    = pd.read_csv(yb_csv, parse_dates=['mday'])
 
-    # Daftar semua station ID
+    # List all station IDs
     station_ids = df_all['sno'].astype(str).unique()
 
-    # Helper: hitung KPI
+    # Helper: compute KPIs
     def compute_kpi(y_true, y_pred, t_elapsed):
         mae  = mean_absolute_error(y_true, y_pred)
         rmse = np.sqrt(mean_squared_error(y_true, y_pred))
@@ -34,38 +34,38 @@ def main():
         r2   = r2_score(y_true, y_pred)
         return mae, rmse, mape, r2, t_elapsed
 
-    # Container untuk menyimpan semua prediksi dan metrik
+    # Containers for storing all predictions and metrics
     predictions_list = []
     metrics_list     = []
 
-    # Loop setiap stasiun
+    # Loop through each station
     for station_id in station_ids:
-        # === 2) Siapkan ts_hourly (YouBike) untuk stasiun ini ===
+        # === 2) Prepare hourly time series for this station ===
         df = df_all[df_all['sno'].astype(str) == station_id].set_index('mday').sort_index()
         ts_hourly = df[target_col].resample(freq).mean()
 
-        # Jika data tidak cukup untuk window forecast, skip stasiun
+        # If there's not enough data for the forecast window, skip this station
         if ts_hourly.empty or ts_hourly.index.min() >= start:
             continue
 
-        # === 3) Siapkan fitur lag (1–num_weeks) ===
+        # === 3) Create lag features (1–num_weeks) ===
         hours_per_week = 7 * 24
         lags = []
         for k in range(1, num_weeks + 1):
             lags.append(ts_hourly.shift(periods=hours_per_week * k).rename(f'lag_{k}'))
         df_lags = pd.concat(lags, axis=1)
 
-        # Hilangkan baris dengan NaN (karena lag)
+        # Remove rows with NaN (due to lags)
         df_lags = df_lags.dropna()
 
-        # Jika df_lags kosong setelah dropna, skip stasiun
+        # If df_lags is empty after dropping NaNs, skip station
         if df_lags.empty:
             continue
 
-        # === 4) Gabungkan fitur untuk Random Forest dan Linear Regression (tanpa weather) ===
+        # === 4) Combine features for Random Forest and Linear Regression (no weather) ===
         df_feats_rf = df_lags.copy()
 
-        # Untuk Linear Regression, tambahkan dow & hour dummies
+        # For Linear Regression, add day-of-week & hour dummy variables
         df_time = pd.DataFrame(index=df_feats_rf.index)
         df_time['dow']  = df_time.index.dayofweek
         df_time['hour'] = df_time.index.hour
@@ -78,11 +78,11 @@ def main():
         y_train    = ts_hourly[mask_train]
         y_test     = ts_hourly[mask_test]
 
-        # Jika tidak ada data uji, skip stasiun
+        # If there's no test data, skip station
         if y_test.empty:
             continue
 
-        # Container prediksi untuk stasiun ini
+        # Container for predictions for this station
         preds = pd.DataFrame(index=y_test.index)
 
         # === Naive ===
@@ -100,7 +100,7 @@ def main():
         fc_weekly_full = df_eval.mean(axis=1).reindex(y_test.index)
         t_weekly  = time.time() - t0
         preds['WeeklyAvg'] = fc_weekly_full
-        # Hanya hitung KPI pada indeks yang tidak NaN
+        # Only compute KPI on non-NaN indices
         valid_weekly = fc_weekly_full.dropna().index
         if not valid_weekly.empty:
             m_weekly = compute_kpi(y_test.loc[valid_weekly], fc_weekly_full.loc[valid_weekly], t_weekly)
@@ -113,7 +113,7 @@ def main():
         train_rf   = df_feats_rf[df_feats_rf.index < start]
         test_rf    = df_feats_rf.loc[start:end]
 
-        # Jika data latih atau data uji kosong, lompatkan RandomForest
+        # If train or test sets are empty, skip Random Forest
         if train_rf.empty or test_rf.empty:
             preds['RandomForest'] = np.nan
             metrics_list.append((station_id, 'RandomForest', np.nan, np.nan, np.nan, np.nan, 0.0))
@@ -137,7 +137,7 @@ def main():
         train_lr = df_feats_lr[df_feats_lr.index < start]
         test_lr  = df_feats_lr.loc[start:end]
 
-        # Jika data latih atau data uji kosong, lompatkan LinearRegression
+        # If train or test sets are empty, skip Linear Regression
         if train_lr.empty or test_lr.empty:
             preds['LinearRegression'] = np.nan
             metrics_list.append((station_id, 'LinearRegression', np.nan, np.nan, np.nan, np.nan, 0.0))
@@ -156,7 +156,7 @@ def main():
             m_lr = compute_kpi(y_test_lr, fc_lr, t_lr)
             metrics_list.append((station_id, 'LinearRegression') + m_lr)
 
-        # === Prophet (tanpa regressors) ===
+        # === Prophet (no regressors) ===
         t0 = time.time()
         prophet_df = ts_hourly[mask_train].to_frame(name='y').reset_index().rename(columns={'mday':'ds'})
         if not prophet_df.empty:
@@ -191,15 +191,15 @@ def main():
         else:
             preds['ARIMA'] = np.nan
 
-        # Tambahkan kolom Actual dan station_id
+        # Add Actual and station_id columns
         preds.insert(0, 'Actual', y_test)
         preds = preds.reset_index().rename(columns={'index': 'timestamp'})
         preds['station_id'] = station_id
         predictions_list.append(preds)
 
-        print(f"Selesai forecast untuk station {station_id}")
+        print(f"Finished forecasting for station {station_id}")
 
-    # === 6) Simpan hasil akhir ===
+    # === 6) Save final results ===
     if predictions_list:
         predictions_all = pd.concat(predictions_list, ignore_index=True)
         predictions_all.to_csv('predictions_all_stations_no_weather.csv', index=False, float_format='%.2f')
@@ -211,7 +211,13 @@ def main():
         )
         metrics_df.to_csv('metrics_all_stations_no_weather.csv', index=False, float_format='%.3f')
 
-    print("Proses forecast tanpa data weather untuk semua stasiun selesai!\n - predictions_all_stations_no_weather.csv\n - metrics_all_stations_no_weather.csv")
+    print(
+        "Forecast process without weather data for all stations completed!\n"
+        " - predictions_all_stations_no_weather.csv\n"
+        " - metrics_all_stations_no_weather.csv"
+    )
 
 if __name__ == "__main__":
     main()
+# This script forecasts YouBike station bike availability without weather data.
+# It uses various models including Naive, Weekly Average, Random Forest, Linear Regression, Prophet, and ARIMA.
