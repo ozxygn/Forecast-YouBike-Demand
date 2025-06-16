@@ -1,0 +1,17 @@
+# Data manipulation
+pandas
+numpy
+
+# Time utilities
+
+# Machine learning & preprocessing
+scikit-learn
+
+# Deep learning
+tensorflow
+
+# Forecasting
+prophet
+
+# Time-series modeling
+statsmodels
