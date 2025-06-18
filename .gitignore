@@ -4,3 +4,5 @@
 # ignore these specific CSVs in project root
 youbike_status.csv
 result/lstm_predictions_all_stations.csv
+weather.csv
+weathermapping.csv
