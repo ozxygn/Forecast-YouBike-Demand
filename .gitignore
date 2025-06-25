@@ -7,3 +7,4 @@ result/lstm_predictions_all_stations.csv
 weather.csv
 weathermapping.csv
 transformer_test/
+tesresult/
